@@ -11,16 +11,12 @@ def age_band_to_midpoint(age_band: str) -> int:
     return (int(low) + int(high)) // 2
 
 
-def build_demographic_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_demographic_features(
+    df: pd.DataFrame,
+    reference_columns: list[str] | None = None,
+) -> pd.DataFrame:
     """
     Build demographic features from race, gender, and age.
-
-    - Drops the ~3 'Unknown/Invalid' gender rows (negligible, ambiguous).
-    - Converts age band strings to a numeric midpoint (ordinal encoding).
-    - One-hot encodes race and gender.
-
-    Returns a new DataFrame with only the engineered demographic columns
-    (plus the original index, so it can be joined back to other feature sets).
     """
     df = df[df["gender"] != "Unknown/Invalid"].copy()
 
@@ -29,11 +25,13 @@ def build_demographic_features(df: pd.DataFrame) -> pd.DataFrame:
     demo = pd.get_dummies(
         df[["race", "gender"]],
         prefix=["race", "gender"],
-        dummy_na=True,   # keep missing race as its own explicit column, don't silently drop it
+        dummy_na=True,
     )
-
-    demo = demo.drop(columns=["gender_nan"])  # drop the gender NaN column, since we already dropped those rows above
+    demo = demo.drop(columns=["gender_nan"])
 
     demo["age_midpoint"] = df["age_midpoint"]
+
+    if reference_columns is not None:
+        demo = demo.reindex(columns=reference_columns, fill_value=0)
 
     return demo
