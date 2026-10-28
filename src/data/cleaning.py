@@ -5,6 +5,7 @@ fix known data-quality bugs, and drop unusable columns.
 import pandas as pd
 
 from src.config import DEATH_CODES, HOSPICE_CODES
+from src.features.demographics import exclude_invalid_gender
 
 
 def build_target(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,6 +48,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     """Run the full cleaning pipeline in the correct order."""
     df = build_target(df)
     df = exclude_death_and_hospice(df)
+    df = exclude_invalid_gender(df)  
     df = fix_mislabeled_missing(df)
     df = drop_unusable_columns(df)
     return df

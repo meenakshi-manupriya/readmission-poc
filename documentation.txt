@@ -1,0 +1,144 @@
+# Decision Log: Data Engineering Phase
+
+Dataset version: v_86a646f1 (119 features; train 79,567 rows; test 19,773 rows)
+Reproduce with: python -m src.pipeline
+
+## D1. Target
+Y = 1 if readmitted == "<30", else 0. Readmission after 30 days (">30") and no
+readmission ("NO") are both negative. Positive rate: 11.39% after exclusions.
+Why: the spec defines the problem as early readmission. Cost: a patient readmitted
+on day 31 is labelled the same as one never readmitted.
+
+## D2. Cohort exclusions
+Removed 2,423 encounters discharged as expired (codes 11, 19, 20, 21) or to hospice
+(13, 14), plus 3 encounters with Unknown/Invalid gender. Final cohort: 99,340.
+Why: a patient who died cannot be readmitted, so labelling them "not readmitted"
+teaches the model about mortality instead of readmission risk.
+Limitation: deaths after discharge, within the 30-day window, are not visible in
+this dataset, so those patients remain labelled Y=0.
+TODO: confirm the disposition codes against IDs_mapping.csv from the UCI download.
+
+## D3. Row granularity and splitting
+Every encounter is its own row (71,518 patients, 76.5% with a single encounter).
+Train/test split uses GroupShuffleSplit on patient_nbr (test_size 0.2, seed 42):
+zero patients appear in both sets. Positive rate: train 11.40%, test 11.35%.
+Why: dropping repeat encounters discards real signal, and a random row split
+would leak patients across train and test.
+Deviation from spec section 5: a temporal split is NOT used as the primary split.
+encounter_id is only a rough time proxy, and a temporal cut would reintroduce
+patient overlap. Temporal validation is deferred to a later robustness check.
+
+## D4. Split before feature engineering
+Anything learned from data (category lists, kept-drug list, payer cutoff) is
+decided from the training set only, then frozen in code. Test conforms to train.
+Why: otherwise test-set information leaks into the design.
+
+## D5. Loading bug fix
+pandas read_csv converted the string "None" (test not performed) to NaN in
+max_glu_serum and A1Cresult. Restored to "None" because the dataset metadata states
+these columns have no missing values.
+
+## D6. Dropped columns
+weight (96.8% missing); citoglipton, examide (constant). readmitted, encounter_id
+and patient_nbr are never features (target and identifiers).
+
+## D7. Feature engineering (119 columns)
+- Demographics (9): age band converted to its numeric midpoint (assumes roughly
+  even spacing); race and gender one-hot, race_nan kept as an explicit column.
+- Encounter (33): true counts kept numeric; admission_type_id and
+  admission_source_id one-hot (they are codes, not magnitudes).
+- Diagnoses (30): each of diag_1/2/3 grouped from ~700 ICD-9 codes into 9
+  clinical categories plus Missing. V and E codes fall into Other.
+- Medications (36): 8 drugs with enough usage keep their own status columns; the
+  13 rare drugs contribute only through n_drugs_prescribed and n_drugs_changed.
+  The cutoff was a judgment call made from training-set rates.
+- Payer (11): 9 codes with at least ~1% of rows, plus Other and Missing.
+
+## D8. payer_code
+Timing of when this field is finalized relative to discharge could not be verified
+from the data. Included, and its effect will be measured by training with and
+without it (drop columns starting with "payer_"). Abbreviations are deliberately
+not expanded here until confirmed from an authoritative source.
+
+## D9. Reproducibility
+The dataset version ID is a content hash. The same ID was produced in the notebook,
+a second notebook run, and a fresh terminal process. The loader re-verifies hashes.
+
+## Known limitations
+- Data covers 1999-2008 with ICD-9 coding; care patterns have changed.
+- Readmission is only observable within the dataset's hospital network.
+- ICD-9 category boundaries follow the commonly used grouping for this dataset;
+  verify against the published source before reporting.
+- Single-feature correlations with Y are weak (max 0.16, number_inpatient), so
+  modest model performance is expected.
+
+## D10. Model families (training-set grouped 5-fold CV; test set untouched)
+Compared logistic, logistic + degree-2 terms, random forest, HistGB, XGBoost, MLP.
+AUROC: XGBoost 0.6446, RF 0.6433, HistGB 0.6426, logistic_poly2 0.6410,
+MLP 0.6358, logistic 0.6352. Paired against logistic, the trees were ahead in
+5/5 folds by 0.007-0.009. XGBoost vs RF: tied. XGBoost vs HistGB: +0.0021 in
+5/5 folds, likely a regularization difference.
+Shortlist: logistic (interpretable reference), XGBoost, random forest.
+Dropped: HistGB (same family as XGBoost), poly2 (subset of what trees capture),
+MLP (no consistent gain). Different algorithms converge near 0.64, which suggests
+the features, not the method, set the ceiling.
+Not covered: SVM (does not scale; no native probabilities), kNN, Naive Bayes.
+
+## D11. payer_code (final)
+Paired with/without comparison, same folds, pre-set bar +0.005 AUROC.
+Logistic: +0.0012 +/- 0.0022. XGBoost: +0.0020 +/- 0.0023 (4/5 folds positive).
+Below the bar: dropped. Primary dataset is v_XXXXXXXX (108 columns, no payer).
+
+## D12. Hyperparameter tuning (training-set grouped CV only)
+XGBoost: 20-config random search. Top 7 configs span AUROC 0.6450-0.6469, within
+fold noise; depth 3 dominated. Hand-picked baseline 0.6446. Selection rule fixed in
+advance: among near-ties choose the simplest. Chosen: depth 3, lr 0.027, 545 trees,
+min_child_weight 15, subsample 0.806, colsample 0.646, reg_lambda 2.18.
+Tuned CV scores are optimistically biased (winner's curse); the unbiased estimate
+comes from the held-out test set, used once.
+Logistic C and RF min_samples_leaf swept for fairness: [results].
+
+## D13. Extra feature columns (discharge_disposition_id, medical_specialty, A1Cresult, max_glu_serum)
+These were classed as known-at-discharge in the audit but omitted from the first
+feature set. Paired CV vs the 108-column set (same folds), bar +0.003 and >=4/5 folds:
+logistic +0.0194 (5/5), XGBoost +0.0245 (5/5).
+Ablation, XGBoost: disposition +0.0237, specialty +0.0007, A1C +0.0005, glucose +0.0002.
+Robustness: merging codes 2 and 5 into Other -> +0.0224; merging 18 and 25 -> +0.0229.
+Mapping file: 18 has no destination label (likely a null), 25 = "Not Mapped".
+Kept: disposition only (117 features). Dropped: specialty, A1C, glucose.
+Limitation: codes 18 and 25 record missing destination information, not a destination.
+
+## D14. Final model settings (117 features; training-set grouped CV, test untouched)
+AUROC: XGBoost hand-picked 0.6705, XGBoost tuned 0.6697, RF leaf20 0.6696,
+logistic C=0.01 0.6589.
+Tuned vs hand-picked XGBoost: -0.0009, positive in 1/5 folds. The tuning edge seen
+on the old 108 features did not survive the feature change (winner's curse), so the
+hand-picked settings are frozen. RF vs tuned XGBoost: -0.0001, tied.
+XGBoost vs logistic: +0.0108, 5/5 folds.
+Frozen: logistic C=0.01; XGBoost 300 trees, lr 0.05, depth 4, subsample 0.8,
+colsample 0.8; RF 300 trees, min_samples_leaf=20.
+v_a3a6775d
+
+## D15. Feature completeness audit
+Ledger check: every column in the cleaned data has an explicit status (27 used, 13
+partly used, 4 excluded by design, 4 tested and dropped); no unaccounted columns.
+The earlier leakage table mislabelled Y as known-at-discharge (a default branch);
+no downstream effect, since the feature modules select columns by name.
+Tested finer diag_1 detail (22 common 3-digit ICD-9 codes + Other + Missing, 24 cols;
+codes chosen by frequency, not outcome). Paired vs 117 features, same folds, bar
++0.003 and >=4/5 folds: logistic +0.0013 (5/5), XGBoost +0.0015 (4/5). Both fail.
+Dropped. Final feature set: 117 columns.
+Not tested: the 13 rare drugs individually, diag_2/diag_3 detail, derived features
+(e.g. total prior visits). Not expected to matter, given the above.
+Re-search on the 117-column features, confirmed on new folds: no gain, hand-picked retained.
+
+## D16. Calibration (out-of-fold training predictions; calibrators scored by a second grouped CV)
+Slope (1 = perfect): logistic 1.03, XGBoost 1.01, random forest 1.37 (underconfident).
+Mean predicted risk within 0.0005 of the observed 0.1140 for all three.
+Rule set in advance: adopt a calibrator only if out-of-fold Brier falls by >= 0.0002.
+XGBoost: neither helps. Random forest: sigmoid -0.0004 (slope 1.00, AUROC unchanged),
+isotonic same Brier but AUROC -0.0011. Logistic: isotonic -0.0002 (at the bar) but
+AUROC -0.0020; left uncalibrated.
+Final: XGBoost uncalibrated, random forest + sigmoid, logistic uncalibrated.
+Observed: logistic overestimates risk in its lowest decile (about 5.8% vs 3.9%).
+Open: final calibration check on the test set.

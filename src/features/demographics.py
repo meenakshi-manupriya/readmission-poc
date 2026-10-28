@@ -10,6 +10,9 @@ def age_band_to_midpoint(age_band: str) -> int:
     low, high = re.findall(r"\d+", age_band)
     return (int(low) + int(high)) // 2
 
+def exclude_invalid_gender(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove the handful of encounters with Unknown/Invalid gender."""
+    return df[df["gender"] != "Unknown/Invalid"].copy()
 
 def build_demographic_features(
     df: pd.DataFrame,
@@ -18,7 +21,7 @@ def build_demographic_features(
     """
     Build demographic features from race, gender, and age.
     """
-    df = df[df["gender"] != "Unknown/Invalid"].copy()
+    df = df.copy()
 
     df["age_midpoint"] = df["age"].apply(age_band_to_midpoint)
 

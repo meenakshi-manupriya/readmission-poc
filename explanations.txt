@@ -1,0 +1,53 @@
+# Explanations: Data Engineering Phase
+
+
+## E1. config.py
+Single source of truth for paths (computed relative to the code), the random seed (42), and the death/hospice exclusion codes.
+
+## E2.ingestion.py
+load_raw_data()
+Fetches the dataset via ucimlrepo, falling back to a local CSV. Returns raw, untouched data.
+
+## E3.validation.py
+validate_raw_data()
+Checks shape, key columns, and unique encounter_id. Raises an error if anything is off, so a pipeline can’t proceed on bad data.
+
+## E4.cleaning.py
+clean_data()
+Runs five steps in order: build target Y, exclude death/hospice, exclude invalid gender, fix the "None"→NaN loading bug, drop weight/citoglipton/examide.
+
+## E5.splitting.py
+split_by_patient()
+GroupShuffleSplit on patient_nbr, so all of a patient’s encounters land on one side.
+
+## E6.demographics.py
+build_demographic_features()
+9 columns: race and gender one-hot, age band converted to its numeric midpoint.
+
+## E7.encounter.py
+build_encounter_features()
+33 columns: true counts kept numeric, admission_type_id/admission_source_id one-hot (they’re codes, not magnitudes).
+
+## E8.diagnoses.py
+build_diagnosis_features()
+30 columns: ~700 ICD-9 codes per slot grouped into 9 clinical categories plus Missing, for each of diag_1/2/3.
+
+## E9.medications.py
+build_medication_features()
+36 columns: full status for 8 commonly used drugs, plus drug-count summaries covering all 21 drugs and two flags.
+
+## E10.payer.py
+build_payer_features()
+11 columns: 9 common payer codes plus Other and Missing. Separate so it can be switched off for the with/without comparison.
+
+## E11.build_features.py
+build_features()
+Orchestrator. Builds all modules, checks rows align, enforces train’s column schema on test, and blocks forbidden columns, duplicates and NaNs.
+
+## E12.versioning.py
+save_dataset_version() / load_dataset_version()
+Saves parquet files plus manifest.json into v_<hash>/. The loader re-verifies content hashes.
+
+## E13.pipeline.py
+run_pipeline()
+The single entry point that runs everything above.
